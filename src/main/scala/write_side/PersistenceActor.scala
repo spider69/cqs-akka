@@ -5,12 +5,21 @@ import akka.persistence.PersistentActor
 
 object PersistenceActor extends App{
 
-    // COMMANDS
+  // COMMANDS
   case class Add(amount: Int)
-  case class Multiply(multiplyer: Int)
+  case class Multiply(multiplier: Int)
+  /*
+    Добавьте пожалуйста классы команды
+    деления здеь
+  */
+
 
   // EVENTS
   case class Added(id: Int, amount: Int)
+  /*
+    Добавьте пожалуйста классы событий
+    умножения и деления здеь
+  */
 
   class Calculator extends PersistentActor with ActorLogging {
 
@@ -31,14 +40,19 @@ object PersistenceActor extends App{
 
           log.info(s"Persisted $e as adding #${e.id}, for result $latestCalculationResult")
         }
+      /*
+        Добавьте пожалуйста код для
+        обработки умножения и деления здеь
+      */
 
     }
 
     override def receiveRecover: Receive = {
-
       case Added(id, amount) =>
+
         latestCalculationId = id
         latestCalculationResult += amount
+
         log.info(s"Recovered invoice #$id for amount $amount, total amount: $latestCalculationResult")
     }
 
@@ -49,5 +63,9 @@ object PersistenceActor extends App{
 
   calculator ! Add(1)
   calculator ! Multiply(4)
+  /*
+    Добавьте пожалуйста код создания
+    и отправки команды деления здесь.
+  */
 
 }
