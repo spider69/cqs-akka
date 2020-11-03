@@ -5,17 +5,18 @@ import akka.persistence.PersistentActor
 
 object PersistenceActor extends App{
 
-  // COMMANDS
-  case class Add(amount: Int)
-  case class Multiply(multiplier: Int)
+  sealed trait Command
+  case class Add(amount: Int) extends Command
+  case class Multiply(amount: Int) extends Command
   /*
     Добавьте пожалуйста классы команды
     деления здеь
   */
 
 
-  // EVENTS
-  case class Added(id: Int, amount: Int)
+  sealed trait Event
+  case class Added(id: Int, amount: Int) extends Event
+  case class Multiplied(id: Int, multiplier: Int) extends Event
   /*
     Добавьте пожалуйста классы событий
     умножения и деления здеь
