@@ -9,8 +9,8 @@ object PersistenceActor extends App{
   case class Add(amount: Int) extends Command
   case class Multiply(amount: Int) extends Command
   /*
-    Добавьте пожалуйста классы команды
-    деления здеь
+    Добавьте пожалуйста класс команды
+    деления здесь
   */
 
 
@@ -18,7 +18,7 @@ object PersistenceActor extends App{
   case class Added(id: Int, amount: Int) extends Event
   case class Multiplied(id: Int, multiplier: Int) extends Event
   /*
-    Добавьте пожалуйста классы событий
+    Добавьте пожалуйста класс события
     умножения и деления здеь
   */
 
