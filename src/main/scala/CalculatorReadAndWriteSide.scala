@@ -1,4 +1,4 @@
-import akka.actor.{ActorLogging, ActorSystem, Props}
+import akka.actor.{Actor, ActorLogging, ActorSystem, Props}
 import akka.persistence.PersistentActor
 import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
 import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
@@ -84,6 +84,28 @@ object CalculatorReadAndWriteSide  extends App {
 
   }
 
+
+  class WordCountActor extends Actor {
+    // internal data
+    var totalWords = 0
+
+    // behavior
+    def receive: Receive = {
+      case message: String =>
+        println(s"[word counter] I have received: $message")
+        totalWords += message.split(" ").length
+      case msg => println(s"[word counter] I cannot understand ${msg.toString}")
+    }
+  }
+
+  class CalculatorRead extends Actor {
+    override def receive: Receive = {
+      case "start" =>  ???
+
+
+    }
+  }
+
   val system = ActorSystem("PersistentActors")
   val calculator = system.actorOf(Props[CalculatorWrite], "simpleCalculator")
 
@@ -101,42 +123,34 @@ object CalculatorReadAndWriteSide  extends App {
 
   val readJournal = PersistenceQuery(system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
 
-  val events = readJournal.eventsByPersistenceId("simple-calculator", 0, Long.MaxValue)
+  val offset = CalculatorRepository.getLatestOffset
 
-  var writeSideOffset              = CalculatorRepository.getLatestOffset
+  val events = readJournal.eventsByPersistenceId("simple-calculator", if(offset == 0) 0 else offset, Long.MaxValue)
+
   var latestWriteCalculationResult = 0.0
 
   events.runForeach {
     event =>
       event.event match {
         case Added(id, amount) =>
-          if (id > writeSideOffset) {
-            writeSideOffset = id
-            latestWriteCalculationResult += amount
+          latestWriteCalculationResult += amount
 
-            CalculatorRepository.updateResultAndOfsset(latestWriteCalculationResult, writeSideOffset)
-            println(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
-          }
+          CalculatorRepository.updateResultAndOfsset(latestWriteCalculationResult, event.sequenceNr)
+          println(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
 
 //          log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
         case Multiplied(id, amount) =>
-          if (id > writeSideOffset) {
-            writeSideOffset = id
-            latestWriteCalculationResult *= amount
+          latestWriteCalculationResult *= amount
 
-            CalculatorRepository.updateResultAndOfsset(latestWriteCalculationResult, writeSideOffset)
-            println(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
-          }
+          CalculatorRepository.updateResultAndOfsset(latestWriteCalculationResult, event.sequenceNr)
+          println(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
 
 //          log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
         case Divided(id, amount) =>
-          if (id > writeSideOffset) {
-            writeSideOffset = id
-            latestWriteCalculationResult /= amount
+          latestWriteCalculationResult /= amount
 
-            CalculatorRepository.updateResultAndOfsset(latestWriteCalculationResult, writeSideOffset)
-            println(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
-          }
+          CalculatorRepository.updateResultAndOfsset(latestWriteCalculationResult, event.sequenceNr)
+          println(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
 
         //          log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
       }
@@ -163,7 +177,7 @@ object CalculatorRepository{
     entities.head
   }
 
-  def updateResultAndOfsset(calculated: Double, offset: Int): Unit = {
+  def updateResultAndOfsset(calculated: Double, offset: Long): Unit = {
     using(DB(ConnectionPool.borrow())) { db =>
       db.autoClose(true)
       db.localTx {
