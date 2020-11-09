@@ -1,9 +1,10 @@
+import akka.NotUsed
 import akka.actor.{Actor, ActorLogging, ActorSystem, Props}
 import akka.persistence.PersistentActor
-import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
 import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
-import akka.persistence.query.{Offset, PersistenceQuery}
+import akka.persistence.query.{EventEnvelope, PersistenceQuery}
 import akka.stream.ActorMaterializer
+import akka.stream.scaladsl.Source
 
 
 object CalculatorReadAndWriteSide  extends App {
@@ -85,76 +86,57 @@ object CalculatorReadAndWriteSide  extends App {
   }
 
 
-  class WordCountActor extends Actor {
-    // internal data
-    var totalWords = 0
+  class CalculatorRead extends Actor with ActorLogging {
+    import CalculatorRepository._
 
-    // behavior
-    def receive: Receive = {
-      case message: String =>
-        println(s"[word counter] I have received: $message")
-        totalWords += message.split(" ").length
-      case msg => println(s"[word counter] I cannot understand ${msg.toString}")
-    }
-  }
+    var latestWriteCalculationResult = 0.0
 
-  class CalculatorRead extends Actor {
+    initDataBase
+
+    implicit val materializer: ActorMaterializer = ActorMaterializer()(system)
+
+    val readJournal: LeveldbReadJournal = PersistenceQuery(system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
+
+    val offset: Int = CalculatorRepository.getLatestOffset
+
+    val events: Source[EventEnvelope, NotUsed] = readJournal.eventsByPersistenceId("simple-calculator", if(offset == 0) 0 else offset, Long.MaxValue)
+
+
     override def receive: Receive = {
-      case "start" =>  ???
+      case "start" =>
+        events.runForeach {
+          event =>
+            event.event match {
+              case Added(id, amount) =>
+                latestWriteCalculationResult += amount
+                updateResultAndOfsset(latestWriteCalculationResult, event.sequenceNr)
+                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
 
-
+              case Multiplied(id, amount) =>
+                latestWriteCalculationResult *= amount
+                updateResultAndOfsset(latestWriteCalculationResult, event.sequenceNr)
+                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
+              case Divided(id, amount) =>
+                latestWriteCalculationResult /= amount
+                updateResultAndOfsset(latestWriteCalculationResult, event.sequenceNr)
+                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
+            }
+        }
+      case _    =>  println("start")
     }
   }
+
 
   val system = ActorSystem("PersistentActors")
-  val calculator = system.actorOf(Props[CalculatorWrite], "simpleCalculator")
+  val calculator = system.actorOf(Props[CalculatorWrite], "simpleCalculatorWrite")
+
+  val person = system.actorOf(Props[CalculatorRead], "simpleCalculatorRead")
+  person ! "start"
+
 
 //  calculator ! Add(1)
 //  calculator ! Multiply(3)
 //  calculator ! Divide(4)
-
-  CalculatorRepository.initDataBase
-
-  println(CalculatorRepository.getLatestOffset)
-
-
-  // Read side
-  implicit val materializer = ActorMaterializer()(system)
-
-  val readJournal = PersistenceQuery(system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
-
-  val offset = CalculatorRepository.getLatestOffset
-
-  val events = readJournal.eventsByPersistenceId("simple-calculator", if(offset == 0) 0 else offset, Long.MaxValue)
-
-  var latestWriteCalculationResult = 0.0
-
-  events.runForeach {
-    event =>
-      event.event match {
-        case Added(id, amount) =>
-          latestWriteCalculationResult += amount
-
-          CalculatorRepository.updateResultAndOfsset(latestWriteCalculationResult, event.sequenceNr)
-          println(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
-
-//          log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
-        case Multiplied(id, amount) =>
-          latestWriteCalculationResult *= amount
-
-          CalculatorRepository.updateResultAndOfsset(latestWriteCalculationResult, event.sequenceNr)
-          println(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
-
-//          log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
-        case Divided(id, amount) =>
-          latestWriteCalculationResult /= amount
-
-          CalculatorRepository.updateResultAndOfsset(latestWriteCalculationResult, event.sequenceNr)
-          println(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
-
-        //          log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
-      }
-  }
 
 }
 
@@ -184,6 +166,5 @@ object CalculatorRepository{
         _.update("update public.result set calculated_value = ?, write_side_offset = ? where id = ?", calculated, offset, 1)
       }
     }
-
   }
 }
