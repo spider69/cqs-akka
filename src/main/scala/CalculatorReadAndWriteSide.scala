@@ -89,15 +89,14 @@ object CalculatorReadAndWriteSide  extends App {
   class CalculatorRead extends Actor with ActorLogging {
     import CalculatorRepository._
 
-    var latestWriteCalculationResult = 0.0
-
     initDataBase
+
+    var (offset, latestCalculatedResult) = getLatestOffsetAndResult
 
     implicit val materializer: ActorMaterializer = ActorMaterializer()(system)
 
     val readJournal: LeveldbReadJournal = PersistenceQuery(system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
 
-    val offset: Int = CalculatorRepository.getLatestOffset
 
     val events: Source[EventEnvelope, NotUsed] = readJournal.eventsByPersistenceId("simple-calculator", if(offset == 0) 0 else offset, Long.MaxValue)
 
@@ -108,21 +107,20 @@ object CalculatorReadAndWriteSide  extends App {
           event =>
             event.event match {
               case Added(id, amount) =>
-                latestWriteCalculationResult += amount
-                updateResultAndOfsset(latestWriteCalculationResult, event.sequenceNr)
-                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
-
+                latestCalculatedResult += amount
+                updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
+                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestCalculatedResult")
               case Multiplied(id, amount) =>
-                latestWriteCalculationResult *= amount
-                updateResultAndOfsset(latestWriteCalculationResult, event.sequenceNr)
-                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
+                latestCalculatedResult *= amount
+                updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
+                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestCalculatedResult")
               case Divided(id, amount) =>
-                latestWriteCalculationResult /= amount
-                updateResultAndOfsset(latestWriteCalculationResult, event.sequenceNr)
-                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestWriteCalculationResult")
+                latestCalculatedResult /= amount
+                updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
+                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestCalculatedResult")
             }
         }
-      case _    =>  println("start")
+      case _    =>  println("Please write start")
     }
   }
 
@@ -150,12 +148,12 @@ object CalculatorRepository{
     ConnectionPool.singleton("jdbc:postgresql://localhost:5432/demo", "docker", "docker", poolSettings)
   }
 
-  def getLatestOffset: Int = {
+  def getLatestOffsetAndResult: (Int, Double) = {
     val entities =
       DB readOnly { session =>
-        session.list("select * from public.result where id = 1;") { row => row.int("write_side_offset") }
+        session.list("select * from public.result where id = 1;") {
+          row => (row.int("write_side_offset"), row.double("calculated_value")) }
       }
-
     entities.head
   }
 
