@@ -3,7 +3,7 @@ package write_side
 import akka.actor.{ActorLogging, ActorSystem, Props}
 import akka.persistence.PersistentActor
 
-object PersistenceActor extends App{
+object PersistenceActorExersixze extends App{
 
   sealed trait Command
   case class Add(amount: Int) extends Command
@@ -11,6 +11,7 @@ object PersistenceActor extends App{
   /*
     Добавьте пожалуйста класс команды
     деления здесь
+
   */
 
 

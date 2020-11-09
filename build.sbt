@@ -10,6 +10,7 @@ lazy val postgresVersion = "42.2.2"
 lazy val cassandraVersion = "0.91"
 lazy val json4sVersion = "3.2.11"
 lazy val protobufVersion = "3.6.1"
+lazy val scalikejdbc = "3.5.0"
 
 // some libs are available in Bintray's JCenter
 resolvers += Resolver.jcenterRepo
@@ -19,5 +20,14 @@ libraryDependencies ++= Seq(
 
   // local levelDB stores
   "org.iq80.leveldb"            % "leveldb"          % leveldbVersion,
-  "org.fusesource.leveldbjni"   % "leveldbjni-all"   % leveldbjniVersion
+  "org.fusesource.leveldbjni"   % "leveldbjni-all"   % leveldbjniVersion,
+
+  // JDBC with PostgreSQL
+  "org.postgresql" % "postgresql" % postgresVersion,
+  "org.scalikejdbc" %% "scalikejdbc" % scalikejdbc,
+
+
+// Cassandra
+"com.typesafe.akka" %% "akka-persistence-cassandra" % cassandraVersion,
+"com.typesafe.akka" %% "akka-persistence-cassandra-launcher" % cassandraVersion % Test,
 )
