@@ -94,10 +94,7 @@ object CalculatorReadAndWriteSide  extends App {
     var (offset, latestCalculatedResult) = getLatestOffsetAndResult
 
     implicit val materializer: ActorMaterializer = ActorMaterializer()(system)
-
     val readJournal: LeveldbReadJournal = PersistenceQuery(system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
-
-
     val events: Source[EventEnvelope, NotUsed] = readJournal.eventsByPersistenceId("simple-calculator", if(offset == 0) 0 else offset, Long.MaxValue)
 
 
@@ -128,13 +125,13 @@ object CalculatorReadAndWriteSide  extends App {
   val system = ActorSystem("PersistentActors")
   val calculator = system.actorOf(Props[CalculatorWrite], "simpleCalculatorWrite")
 
-  val person = system.actorOf(Props[CalculatorRead], "simpleCalculatorRead")
-  person ! "start"
-
-
 //  calculator ! Add(1)
 //  calculator ! Multiply(3)
 //  calculator ! Divide(4)
+
+  val person = system.actorOf(Props[CalculatorRead], "simpleCalculatorRead")
+  person ! "start"
+
 
 }
 
