@@ -27,7 +27,7 @@ libraryDependencies ++= Seq(
   "org.scalikejdbc" %% "scalikejdbc" % scalikejdbc,
 
 
-// Cassandra
-"com.typesafe.akka" %% "akka-persistence-cassandra" % cassandraVersion,
-"com.typesafe.akka" %% "akka-persistence-cassandra-launcher" % cassandraVersion % Test,
+  // Cassandra
+  "com.typesafe.akka" %% "akka-persistence-cassandra" % cassandraVersion,
+  "com.typesafe.akka" %% "akka-persistence-cassandra-launcher" % cassandraVersion % Test,
 )

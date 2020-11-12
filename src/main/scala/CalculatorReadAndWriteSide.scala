@@ -111,10 +111,6 @@ object CalculatorReadAndWriteSide  extends App {
                 latestCalculatedResult *= amount
                 updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
                 log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestCalculatedResult")
-              case Divided(id, amount) =>
-                latestCalculatedResult /= amount
-                updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestCalculatedResult")
             }
         }
       case _    =>  println("Please write start")
@@ -123,14 +119,14 @@ object CalculatorReadAndWriteSide  extends App {
 
 
   val system = ActorSystem("PersistentActors")
-  val calculator = system.actorOf(Props[CalculatorWrite], "simpleCalculatorWrite")
+  val calculatorWriteSide = system.actorOf(Props[CalculatorWrite], "simpleCalculatorWrite")
 
-//  calculator ! Add(1)
-//  calculator ! Multiply(3)
-//  calculator ! Divide(4)
+  calculatorWriteSide ! Add(1)
+  calculatorWriteSide ! Multiply(3)
+  calculatorWriteSide ! Divide(4)
 
-  val person = system.actorOf(Props[CalculatorRead], "simpleCalculatorRead")
-  person ! "start"
+  val calculatorReadSide = system.actorOf(Props[CalculatorRead], "simpleCalculatorRead")
+  calculatorReadSide ! "start"
 
 
 }
