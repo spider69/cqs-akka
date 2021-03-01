@@ -5,7 +5,7 @@ import akka.actor.typed._
 import akka.persistence.typed.PersistenceId
 import akka.persistence.typed.scaladsl.{Effect, EventSourcedBehavior}
 import akka.util.Timeout
-import akka_typed.TypedCalculatorWriteSide.{Add, Added, Command, Divide, Multiply, State}
+import akka_typed.TypedCalculatorWriteSide.{Add, Added, Command, Divide, Divided, Multiplied, Multiply, State}
 import from_lesson.intro_actors.Supervisor
 
 import scala.concurrent.duration._
@@ -71,6 +71,21 @@ object akka_typed {
             .thenRun { x =>
               ctx.log.info(s"The state result is ${x.value}")
             }
+        case Multiply(amount) =>
+          ctx.log.info(s"Receive adding for number: $amount and state is ${state.value}")
+          Effect
+            .persist(Added(persistenceId.toInt, amount))
+            .thenRun { x =>
+              ctx.log.info(s"The state result is ${x.value}")
+            }
+        case Divide(amount) =>
+          ctx.log.info(s"Receive adding for number: $amount and state is ${state.value}")
+          Effect
+            .persist(Added(persistenceId.toInt, amount))
+            .thenRun { x =>
+              ctx.log.info(s"The state result is ${x.value}")
+            }
+
       }
 
     def handleEvent(state: State, event: Event, ctx: ActorContext[Command]) =
@@ -103,6 +118,14 @@ object akka_typed {
       .runForeach { event =>
         event.event match {
           case Added(id, amount) =>
+            latestCalculatedResult += amount
+            updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
+            println(s"!!!!!!!!!!!!!!!! TEst test: $latestCalculatedResult")
+          case Multiplied(id, amount) =>
+            latestCalculatedResult += amount
+            updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
+            println(s"!!!!!!!!!!!!!!!! TEst test: $latestCalculatedResult")
+          case Divided(id, amount) =>
             latestCalculatedResult += amount
             updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
             println(s"!!!!!!!!!!!!!!!! TEst test: $latestCalculatedResult")
