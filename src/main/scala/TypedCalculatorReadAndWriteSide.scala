@@ -1,34 +1,14 @@
-import CalculatorRepository.{getLatestOffsetAndResult, initDataBase}
-import akka.{NotUsed, actor}
-import akka.actor.typed.scaladsl.AskPattern.Askable
-import akka.actor.typed._
+import akka.NotUsed
+import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
+import akka.actor.typed.{ActorSystem, Props, _}
 import akka.persistence.typed.PersistenceId
 import akka.persistence.typed.scaladsl.{Effect, EventSourcedBehavior}
-import akka.util.Timeout
-import akka_typed.TypedCalculatorWriteSide.{Add, Added, Command, Divide, Divided, Multiplied, Multiply, State}
-import from_lesson.intro_actors.Supervisor
-
-import scala.concurrent.duration._
-import scala.concurrent.{ExecutionContext, Future}
-import akka.actor.typed.scaladsl.AskPattern._
-import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import akka.actor.typed.{ActorRef, ActorSystem, Props, SpawnProtocol}
-import akka.persistence.typed.scaladsl.EventSourcedBehavior.CommandHandler
-import akka.util.Timeout
-import from_lesson.intro_actors.{Supervisor, behaviors_factory_methods}
-import akka.persistence.query.{EventEnvelope, PersistenceQuery}
-import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
-import akka.stream.ActorMaterializer
-import akka.stream.scaladsl.Source
-import com.typesafe.config.ConfigFactory
-
-import scala.concurrent.duration.DurationInt
-import scala.concurrent.{ExecutionContext, Future}
+import akka_typed.TypedCalculatorWriteSide.{Add, Divide, Multiply}
 
 object akka_typed {
   trait CborSerializable
 
-  val persistenceId = "001"
+  val persId = "001"
 
   object TypedCalculatorWriteSide {
     sealed trait Command
@@ -55,9 +35,9 @@ object akka_typed {
     def apply(): Behavior[Command] =
       Behaviors.setup { ctx =>
         EventSourcedBehavior[Command, Event, State](
-          PersistenceId("ShoppingCart", persistenceId),
+          PersistenceId("ShoppingCart", persId),
           State.empty,
-          (state, command) => handleCommand(persistenceId, state, command, ctx),
+          (state, command) => handleCommand(persId, state, command, ctx),
           (state, event) => handleEvent(state, event, ctx)
         )
       }
@@ -66,29 +46,29 @@ object akka_typed {
       command match {
         case Add(amount) =>
           ctx.log.info(s"Receive adding for number: $amount and state is ${state.value}")
+          val added = Added(persistenceId.toInt, amount)
           Effect
-            .persist(Added(persistenceId.toInt, amount))
+            .persist(added)
             .thenRun { x =>
               ctx.log.info(s"The state result is ${x.value}")
             }
         case Multiply(amount) =>
-          ctx.log.info(s"Receive adding for number: $amount and state is ${state.value}")
+          ctx.log.info(s"Receive multiplying for number: $amount and state is ${state.value}")
           Effect
             .persist(Added(persistenceId.toInt, amount))
-            .thenRun { x =>
-              ctx.log.info(s"The state result is ${x.value}")
+            .thenRun { newState =>
+              ctx.log.info(s"The state result is ${newState.value}")
             }
         case Divide(amount) =>
-          ctx.log.info(s"Receive adding for number: $amount and state is ${state.value}")
+          ctx.log.info(s"Receive dividing for number: $amount and state is ${state.value}")
           Effect
             .persist(Added(persistenceId.toInt, amount))
             .thenRun { x =>
               ctx.log.info(s"The state result is ${x.value}")
             }
-
       }
 
-    def handleEvent(state: State, event: Event, ctx: ActorContext[Command]) =
+    def handleEvent(state: State, event: Event, ctx: ActorContext[Command]): State =
       event match {
         case Added(_, amount) =>
           ctx.log.info(s"Handing event amount is $amount and state is ${state.value}")
@@ -102,36 +82,6 @@ object akka_typed {
       }
   }
 
-  case class TypedCalculatorReadSide(system: ActorSystem[NotUsed]) {
-    import CalculatorRepository._
-    initDataBase
-
-    implicit val materializer = system.classicSystem
-    var (offset, latestCalculatedResult) = getLatestOffsetAndResult
-    val startOffset: Int                 = if (offset == 0) 0 else offset
-
-    val readJournal: LeveldbReadJournal =
-      PersistenceQuery(system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
-
-    readJournal
-      .eventsByPersistenceId("ShoppingCart|001", startOffset, Long.MaxValue)
-      .runForeach { event =>
-        event.event match {
-          case Added(id, amount) =>
-            latestCalculatedResult += amount
-            updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-            println(s"!!!!!!!!!!!!!!!! TEst test: $latestCalculatedResult")
-          case Multiplied(id, amount) =>
-            latestCalculatedResult += amount
-            updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-            println(s"!!!!!!!!!!!!!!!! TEst test: $latestCalculatedResult")
-          case Divided(id, amount) =>
-            latestCalculatedResult += amount
-            updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-            println(s"!!!!!!!!!!!!!!!! TEst test: $latestCalculatedResult")
-        }
-      }
-  }
 
   def apply(): Behavior[NotUsed] =
     Behaviors.setup { ctx =>
@@ -146,47 +96,6 @@ object akka_typed {
 
   def main(args: Array[String]): Unit = {
     val system: ActorSystem[NotUsed] = ActorSystem(akka_typed(), "akka_typed")
-
-    TypedCalculatorReadSide(system)
   }
 
-}
-
-object CalculatorRepository {
-  import scalikejdbc._
-
-  def initDataBase: Unit = {
-    Class.forName("org.postgresql.Driver")
-    val poolSettings = ConnectionPoolSettings(initialSize = 1, maxSize = 10)
-    ConnectionPool.singleton(
-      "jdbc:postgresql://localhost:5432/demo",
-      "docker",
-      "docker",
-      poolSettings
-    )
-  }
-
-  def getLatestOffsetAndResult: (Int, Double) = {
-    val entities =
-      DB readOnly { session =>
-        session.list("select * from public.result where id = 1;") { row =>
-          (row.int("write_side_offset"), row.double("calculated_value"))
-        }
-      }
-    entities.head
-  }
-
-  def updateResultAndOfsset(calculated: Double, offset: Long): Unit = {
-    using(DB(ConnectionPool.borrow())) { db =>
-      db.autoClose(true)
-      db.localTx {
-        _.update(
-          "update public.result set calculated_value = ?, write_side_offset = ? where id = ?",
-          calculated,
-          offset,
-          1
-        )
-      }
-    }
-  }
 }

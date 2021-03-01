@@ -5,6 +5,7 @@ import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
 import akka.persistence.query.{EventEnvelope, PersistenceQuery}
 import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.Source
+import akka_typed.TypedCalculatorWriteSide.{Add, Added, Divide, Multiplied, Multiply}
 
 
 object CalculatorReadAndWriteSide  extends App {
@@ -31,8 +32,7 @@ object CalculatorReadAndWriteSide  extends App {
         log.info(s"Receive adding for number: $amount")
         val event = Added(latestCalculationId, amount)
 
-        persist(event)
-        { e =>
+        persist(event) { e =>
           latestCalculationId += 1
           latestCalculationResult += amount
 
@@ -42,8 +42,7 @@ object CalculatorReadAndWriteSide  extends App {
         log.info(s"Receive multiplying for number: $amount")
         val event = Multiplied(latestCalculationId, amount)
 
-        persist(event)
-        { e =>
+        persist(event) { e =>
           latestCalculationId += 1
           latestCalculationResult *= amount
 
@@ -53,8 +52,7 @@ object CalculatorReadAndWriteSide  extends App {
         log.info(s"Receive dividing for number: $amount")
         val event = Divided(latestCalculationId, amount)
 
-        persist(event)
-        { e =>
+        persist(event) { e =>
           latestCalculationId += 1
           latestCalculationResult /= amount
 
@@ -84,78 +82,78 @@ object CalculatorReadAndWriteSide  extends App {
     }
 
   }
-
-
-  class CalculatorRead extends Actor with ActorLogging {
-    import CalculatorRepository._
-
-    initDataBase
-
-    var (offset, latestCalculatedResult) = getLatestOffsetAndResult
-
-    implicit val materializer: ActorMaterializer = ActorMaterializer()(system)
-    val readJournal: LeveldbReadJournal = PersistenceQuery(system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
-    val events: Source[EventEnvelope, NotUsed] = readJournal.eventsByPersistenceId("simple-calculator", if(offset == 0) 0 else offset, Long.MaxValue)
-
-
-    override def receive: Receive = {
-      case "start" =>
-        events.runForeach {
-          event =>
-            event.event match {
-              case Added(id, amount) =>
-                latestCalculatedResult += amount
-                updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestCalculatedResult")
-              case Multiplied(id, amount) =>
-                latestCalculatedResult *= amount
-                updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestCalculatedResult")
-            }
-        }
-      case _    =>  println("Please write start")
-    }
-  }
-
-
-  val system = ActorSystem("PersistentActors")
-  val calculatorWriteSide = system.actorOf(Props[CalculatorWrite], "simpleCalculatorWrite")
-
-  calculatorWriteSide ! Add(1)
-  calculatorWriteSide ! Multiply(3)
-  calculatorWriteSide ! Divide(4)
-
-  val calculatorReadSide = system.actorOf(Props[CalculatorRead], "simpleCalculatorRead")
-  calculatorReadSide ! "start"
-
-
 }
 
-object CalculatorRepository{
-  import scalikejdbc._
-
-  def initDataBase: Unit = {
-    Class.forName("org.postgresql.Driver")
-    val poolSettings = ConnectionPoolSettings(initialSize = 10, maxSize = 100)
-
-    ConnectionPool.singleton("jdbc:postgresql://localhost:5432/demo", "docker", "docker", poolSettings)
-  }
-
-  def getLatestOffsetAndResult: (Int, Double) = {
-    val entities =
-      DB readOnly { session =>
-        session.list("select * from public.result where id = 1;") {
-          row => (row.int("write_side_offset"), row.double("calculated_value")) }
-      }
-    entities.head
-  }
-
-  def updateResultAndOfsset(calculated: Double, offset: Long): Unit = {
-    using(DB(ConnectionPool.borrow())) { db =>
-      db.autoClose(true)
-      db.localTx {
-        _.update("update public.result set calculated_value = ?, write_side_offset = ? where id = ?", calculated, offset, 1)
-      }
-    }
-  }
-}
+//
+//  class CalculatorRead extends Actor with ActorLogging {
+//    import CalculatorRepository._
+//
+//    initDataBase
+//
+//    var (offset, latestCalculatedResult) = getLatestOffsetAndResult
+//
+//    implicit val materializer: ActorMaterializer = ActorMaterializer()(system)
+//    val readJournal: LeveldbReadJournal = PersistenceQuery(system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
+//    val events: Source[EventEnvelope, NotUsed] = readJournal.eventsByPersistenceId("simple-calculator", if(offset == 0) 0 else offset, Long.MaxValue)
+//
+//
+//    override def receive: Receive = {
+//      case "start" =>
+//        events.runForeach {
+//          event =>
+//            event.event match {
+//              case Added(id, amount) =>
+//                latestCalculatedResult += amount
+//                updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
+//                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestCalculatedResult")
+//              case Multiplied(id, amount) =>
+//                latestCalculatedResult *= amount
+//                updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
+//                log.info(s"Saved to read store invoice #$id for amount $amount, total amount: $latestCalculatedResult")
+//            }
+//        }
+//      case _    =>  println("Please write start")
+//    }
+//  }
+//
+//
+//  val system = ActorSystem("PersistentActors")
+//  val calculatorWriteSide = system.actorOf(Props[CalculatorWrite], "simpleCalculatorWrite")
+//
+//  calculatorWriteSide ! Add(1)
+//  calculatorWriteSide ! Multiply(3)
+//  calculatorWriteSide ! Divide(4)
+//
+//  val calculatorReadSide = system.actorOf(Props[CalculatorRead], "simpleCalculatorRead")
+//  calculatorReadSide ! "start"
+//
+//}
+//
+//object CalculatorRepository{
+//  import scalikejdbc._
+//
+//  def initDataBase: Unit = {
+//    Class.forName("org.postgresql.Driver")
+//    val poolSettings = ConnectionPoolSettings(initialSize = 10, maxSize = 100)
+//
+//    ConnectionPool.singleton("jdbc:postgresql://localhost:5432/demo", "docker", "docker", poolSettings)
+//  }
+//
+//  def getLatestOffsetAndResult: (Int, Double) = {
+//    val entities =
+//      DB readOnly { session =>
+//        session.list("select * from public.result where id = 1;") {
+//          row => (row.int("write_side_offset"), row.double("calculated_value")) }
+//      }
+//    entities.head
+//  }
+//
+//  def updateResultAndOfsset(calculated: Double, offset: Long): Unit = {
+//    using(DB(ConnectionPool.borrow())) { db =>
+//      db.autoClose(true)
+//      db.localTx {
+//        _.update("update public.result set calculated_value = ?, write_side_offset = ? where id = ?", calculated, offset, 1)
+//      }
+//    }
+//  }
+//}
