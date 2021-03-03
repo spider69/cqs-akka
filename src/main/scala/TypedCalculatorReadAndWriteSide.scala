@@ -1,14 +1,17 @@
 import akka.NotUsed
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorSystem, Props, _}
+import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
+import akka.persistence.query.{EventEnvelope, PersistenceQuery}
 import akka.persistence.typed.PersistenceId
 import akka.persistence.typed.scaladsl.{Effect, EventSourcedBehavior}
-import akka_typed.TypedCalculatorWriteSide.{Add, Divide, Multiply}
+import akka.stream.scaladsl.Source
+import akka_typed.TypedCalculatorWriteSide._
 
 object akka_typed {
   trait CborSerializable
 
-  val persId = "001"
+  val persId = PersistenceId.ofUniqueId("001")
 
   object TypedCalculatorWriteSide {
     sealed trait Command
@@ -31,13 +34,13 @@ object akka_typed {
       val empty = State(0)
     }
 
-
     def apply(): Behavior[Command] =
       Behaviors.setup { ctx =>
+
         EventSourcedBehavior[Command, Event, State](
-          PersistenceId("ShoppingCart", persId),
+          persistenceId = persId,
           State.empty,
-          (state, command) => handleCommand(persId, state, command, ctx),
+          (state, command) => handleCommand("001", state, command, ctx),
           (state, event) => handleEvent(state, event, ctx)
         )
       }
@@ -83,6 +86,39 @@ object akka_typed {
   }
 
 
+  case class TypedCalculatorReadSide(system: ActorSystem[NotUsed]) {
+    import CalculatorRepository._
+    initDataBase
+
+    implicit val materializer = system.classicSystem
+    var (offset, latestCalculatedResult) = getLatestOffsetAndResult
+    val startOffset: Int                 = if (offset == 0) 0 else offset
+
+    val readJournal: CassandraReadJournal =
+      PersistenceQuery(system).readJournalFor[CassandraReadJournal](CassandraReadJournal.Identifier)
+
+    val source: Source[EventEnvelope, NotUsed] = readJournal
+      .eventsByPersistenceId("001", startOffset, Long.MaxValue)
+
+    source.runForeach { event =>
+        event.event match {
+          case Added(_, amount) =>
+            latestCalculatedResult += amount
+            updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
+            println(s"! TEst test: $latestCalculatedResult")
+          case Multiplied(_, amount) =>
+            latestCalculatedResult += amount
+            updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
+            println(s"! TEst test: $latestCalculatedResult")
+          case Divided(_, amount) =>
+            latestCalculatedResult += amount
+            updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
+            println(s"! TEst test: $latestCalculatedResult")
+        }
+      }
+  }
+
+
   def apply(): Behavior[NotUsed] =
     Behaviors.setup { ctx =>
       val writeActorRef = ctx.spawn(TypedCalculatorWriteSide(), "Calculato", Props.empty)
@@ -96,6 +132,41 @@ object akka_typed {
 
   def main(args: Array[String]): Unit = {
     val system: ActorSystem[NotUsed] = ActorSystem(akka_typed(), "akka_typed")
+
+    TypedCalculatorReadSide(system)
+  }
+}
+
+object CalculatorRepository {
+  import scalikejdbc._
+
+  def initDataBase: Unit = {
+    Class.forName("org.postgresql.Driver")
+    val poolSettings = ConnectionPoolSettings(initialSize = 1, maxSize = 10)
+    ConnectionPool.singleton(
+      "jdbc:postgresql://localhost:5432/demo",
+      "docker",
+      "docker",
+      poolSettings
+    )
   }
 
+  def getLatestOffsetAndResult: (Int, Double) = {
+    val entities =
+      DB readOnly { session =>
+        session.list("select * from public.result where id = 1;") { row =>
+          (row.int("write_side_offset"), row.double("calculated_value"))
+        }
+      }
+    entities.head
+  }
+
+  def updateResultAndOfsset(calculated: Double, offset: Long): Unit = {
+    using(DB(ConnectionPool.borrow())) { db =>
+      db.autoClose(true)
+      db.localTx {
+        _.update("update public.result set calculated_value = ?, write_side_offset = ? where id = ?", calculated, offset, 1)
+      }
+    }
+  }
 }
