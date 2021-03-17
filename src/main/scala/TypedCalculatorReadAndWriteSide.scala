@@ -6,29 +6,47 @@ import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
 import akka.persistence.query.{EventEnvelope, PersistenceQuery}
 import akka.persistence.typed.PersistenceId
 import akka.persistence.typed.scaladsl.{Effect, EventSourcedBehavior}
+import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.Source
-import akka_typed.TypedCalculatorWriteSide._
+import akka.actor.typed.ActorSystem
+import akka.actor.typed.scaladsl.Behaviors
+import akka.http.scaladsl.Http
+import akka.http.scaladsl.model.{ContentTypes, HttpEntity, StatusCodes}
+import akka.http.scaladsl.server.Directives._
+import akka_typed.TypedCalculatorWriteSide.{Add, Added, Command, Divide, Divided, Multiplied, Multiply}
+import spray.json.{DefaultJsonProtocol, enrichAny, _}
 
-object akka_typed {
+import scala.concurrent.duration._
+import scala.io.StdIn
+import scala.util.{Failure, Success}
+
+case class Action(value: Int, name: String)
+
+trait ActionJsonProtocol extends DefaultJsonProtocol {
+  implicit val personJson = jsonFormat2(Action)
+}
+
+object akka_typed extends ActionJsonProtocol
+{
   trait CborSerializable
 
   val persId = PersistenceId.ofUniqueId("001")
 
   object TypedCalculatorWriteSide {
     sealed trait Command
-    case class Add(amount: Int) extends Command
+    case class Add(amount: Int)      extends Command
     case class Multiply(amount: Int) extends Command
-    case class Divide(amount: Int) extends Command
+    case class Divide(amount: Int)   extends Command
 
     sealed trait Event
-    case class Added(id: Int, amount: Int) extends Event
+    case class Added(id: Int, amount: Int)      extends Event
     case class Multiplied(id: Int, amount: Int) extends Event
-    case class Divided(id: Int, amount: Int) extends Event
+    case class Divided(id: Int, amount: Int)    extends Event
 
     final case class State(value: Int) extends CborSerializable {
-      def add(amount: Int): State = copy(value = value + amount)
+      def add(amount: Int): State      = copy(value = value + amount)
       def multiply(amount: Int): State = copy(value = value * amount)
-      def divide(amount: Int): State = copy(value = value / amount)
+      def divide(amount: Int): State   = copy(value = value / amount)
     }
 
     object State {
@@ -37,7 +55,6 @@ object akka_typed {
 
     def apply(): Behavior[Command] =
       Behaviors.setup { ctx =>
-
         EventSourcedBehavior[Command, Event, State](
           persistenceId = persId,
           State.empty,
@@ -46,7 +63,12 @@ object akka_typed {
         )
       }
 
-    def handleCommand(persistenceId: String, state: State, command: Command, ctx: ActorContext[Command]): Effect[Event, State] =
+    def handleCommand(
+        persistenceId: String,
+        state: State,
+        command: Command,
+        ctx: ActorContext[Command]
+    ): Effect[Event, State] =
       command match {
         case Add(amount) =>
           ctx.log.info(s"Receive adding for number: $amount and state is ${state.value}")
@@ -86,12 +108,11 @@ object akka_typed {
       }
   }
 
-
   case class TypedCalculatorReadSide(system: ActorSystem[NotUsed]) {
-    import CalculatorRepository._
+    import dao.CalculatorRepository._
     initDataBase
 
-    implicit val materializer = system.classicSystem
+    implicit val materializer            = system.classicSystem
     var (offset, latestCalculatedResult) = getLatestOffsetAndResult
     val startOffset: Int                 = if (offset == 0) 0 else offset
 
@@ -102,23 +123,22 @@ object akka_typed {
       .eventsByPersistenceId("001", startOffset, Long.MaxValue)
 
     source.runForeach { event =>
-        event.event match {
-          case Added(_, amount) =>
-            latestCalculatedResult += amount
-            updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-            println(s"! TEst test: $latestCalculatedResult")
-          case Multiplied(_, amount) =>
-            latestCalculatedResult += amount
-            updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-            println(s"! TEst test: $latestCalculatedResult")
-          case Divided(_, amount) =>
-            latestCalculatedResult += amount
-            updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-            println(s"! TEst test: $latestCalculatedResult")
-        }
+      event.event match {
+        case Added(_, amount) =>
+          latestCalculatedResult += amount
+          updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
+          println(s"! TEst test: $latestCalculatedResult")
+        case Multiplied(_, amount) =>
+          latestCalculatedResult += amount
+          updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
+          println(s"! TEst test: $latestCalculatedResult")
+        case Divided(_, amount) =>
+          latestCalculatedResult += amount
+          updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
+          println(s"! TEst test: $latestCalculatedResult")
       }
+    }
   }
-
 
   def apply(): Behavior[NotUsed] =
     Behaviors.setup { ctx =>
@@ -131,43 +151,68 @@ object akka_typed {
       Behaviors.same
     }
 
+  def execute(comm: Command): Behavior[NotUsed] =
+    Behaviors.setup { ctx =>
+      val writeActorRef = ctx.spawn(TypedCalculatorWriteSide(), "Calculato", Props.empty)
+
+      writeActorRef ! comm
+
+      Behaviors.same
+    }
+
   def main(args: Array[String]): Unit = {
-    val system: ActorSystem[NotUsed] = ActorSystem(akka_typed(), "akka_typed")
+    val value = akka_typed()
+    implicit val system: ActorSystem[NotUsed] = ActorSystem(value, "akka_typed")
+
+    execute(Add(1000))
 
     TypedCalculatorReadSide(system)
-  }
-}
 
-object CalculatorRepository {
-  import scalikejdbc._
+    implicit val executionContext = system.executionContext
 
-  def initDataBase: Unit = {
-    Class.forName("org.postgresql.Driver")
-    val poolSettings = ConnectionPoolSettings(initialSize = 1, maxSize = 10)
-    ConnectionPool.singleton(
-      "jdbc:postgresql://localhost:5432/demo",
-      "docker",
-      "docker",
-      poolSettings
+
+    var actions = List(
+      Action(1, "Add"),
+      Action(2, "Multiply"),
+      Action(3, "Divide")
     )
-  }
 
-  def getLatestOffsetAndResult: (Int, Double) = {
-    val entities =
-      DB readOnly { session =>
-        session.list("select * from public.result where id = 1;") { row =>
-          (row.int("write_side_offset"), row.double("calculated_value"))
-        }
-      }
-    entities.head
-  }
+    val personServerRoute =
+      pathPrefix("api" / "action") {
+        get {
+          pathEndOrSingleSlash {
+            complete(
+              HttpEntity(
+                ContentTypes.`application/json`,
 
-  def updateResultAndOfsset(calculated: Double, offset: Long): Unit = {
-    using(DB(ConnectionPool.borrow())) { db =>
-      db.autoClose(true)
-      db.localTx {
-        _.update("update public.result set calculated_value = ?, write_side_offset = ? where id = ?", calculated, offset, 1)
+                actions.toJson.prettyPrint
+              )
+            )
+          }
+        } ~
+          (post & pathEndOrSingleSlash & extractRequest & extractLog) { (request, log) =>
+            val entity             = request.entity
+            val strictEntityFuture = entity.toStrict(2 seconds)
+            val actionFuture       = strictEntityFuture.map(_.data.utf8String.parseJson.convertTo[Action])
+
+            onComplete(actionFuture) {
+              case Success(action) =>
+                log.info(s"Got action: $action")
+
+                actions = actions :+ action
+                complete(StatusCodes.OK)
+              case Failure(ex) =>
+                failWith(ex)
+            }
+          }
       }
-    }
+
+    val bindingFuture = Http().newServerAt("localhost", 8080).bind(personServerRoute)
+
+    println(s"Server online at http://localhost:8080/\nPress RETURN to stop...")
+    StdIn.readLine() // let it run until user presses return
+    bindingFuture
+      .flatMap(_.unbind())                 // trigger unbinding from the port
+      .onComplete(_ => system.terminate()) // and shutdown when done
   }
 }
