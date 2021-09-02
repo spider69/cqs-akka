@@ -121,10 +121,27 @@ object akka_typed
     val readJournal: CassandraReadJournal =
       PersistenceQuery(system).readJournalFor[CassandraReadJournal](CassandraReadJournal.Identifier)
 
+
+    /**
+     * В read side приложения с архитектурой CQRS (объект TypedCalculatorReadSide в TypedCalculatorReadAndWriteSide.scala) необходимо разделить бизнес логику и запись в целевой получатель, т.е.
+     * 1) Persistence Query должно находиться в Source
+     * 2) Обновление состояния необходимо переместить в отдельный от записи в БД флоу
+     * 3) ! Задание со звездочкой: вместо CalculatorRepository создать Sink c любой БД (например Postgres из docker-compose файла).
+     * Для последнего задания пригодится документация - https://doc.akka.io/docs/alpakka/current/slick.html#using-a-slick-flow-or-sink
+     * Результат выполненного д.з. необходимо оформить либо на github gist либо PR к текущему репозиторию.
+     *
+     * */
+
+
     val source: Source[EventEnvelope, NotUsed] = readJournal
       .eventsByPersistenceId("001", startOffset, Long.MaxValue)
 
-    source.runForeach { event =>
+    source
+      .map{x =>
+        println(x.toString())
+        x
+      }
+      .runForeach { event =>
       event.event match {
         case Added(_, amount) =>
 //          println(s"!Before Log from Added: $latestCalculatedResult")
