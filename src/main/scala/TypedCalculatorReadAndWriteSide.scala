@@ -1,27 +1,13 @@
 import akka.NotUsed
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import akka.actor.typed.{ActorSystem, Props, _}
-import akka.persistence.typed.PersistenceId
-import akka.persistence.typed.scaladsl.{Effect, EventSourcedBehavior}
-import akka_typed.TypedCalculatorWriteSide.{Add, Command, Divide, Multiply}
-import akka.NotUsed
-import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import akka.actor.typed.{ActorSystem, Props, _}
+import akka.actor.typed._
 import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
-import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
 import akka.persistence.query.{EventEnvelope, PersistenceQuery}
 import akka.persistence.typed.PersistenceId
 import akka.persistence.typed.scaladsl.{Effect, EventSourcedBehavior}
-import akka.stream.ActorMaterializer
-import akka.stream.scaladsl.Source
-import akka.actor.typed.ActorSystem
-import akka.actor.typed.scaladsl.Behaviors
-import akka_typed.CalculatorRepository.{getLatestOffsetAndResult, initDataBase, updateResultAndOfsset}
-import akka_typed.TypedCalculatorWriteSide.{Add, Added, Command, Divide, Divided, Multiplied, Multiply}
-
-import scala.concurrent.duration._
-import scala.io.StdIn
-import scala.util.{Failure, Success}
+import akka.stream.ClosedShape
+import akka.stream.scaladsl.{Broadcast, Flow, GraphDSL, RunnableGraph, Sink, Source}
+import akka_typed.CalculatorRepository.{getLatestOffsetAndResult, initDataBase, updateResultAndOffset}
 
 
 
@@ -41,14 +27,14 @@ object akka_typed
     case class Divide(amount: Int)   extends Command
 
     sealed trait Event
-    case class Added(id: Int, amount: Int)      extends Event
-    case class Multiplied(id: Int, amount: Int) extends Event
-    case class Divided(id: Int, amount: Int)    extends Event
+    case class Added(id: Int, amount: Double)      extends Event
+    case class Multiplied(id: Int, amount: Double) extends Event
+    case class Divided(id: Int, amount: Double)    extends Event
 
-    final case class State(value: Int) extends CborSerializable {
-      def add(amount: Int): State      = copy(value = value + amount)
-      def multiply(amount: Int): State = copy(value = value * amount)
-      def divide(amount: Int): State   = copy(value = value / amount)
+    final case class State(value: Double) extends CborSerializable {
+      def add(amount: Double): State      = copy(value = value + amount)
+      def multiply(amount: Double): State = copy(value = value * amount)
+      def divide(amount: Double): State   = copy(value = value / amount)
     }
 
     object State {
@@ -110,6 +96,8 @@ object akka_typed
       }
   }
 
+  import TypedCalculatorWriteSide._
+
   case class TypedCalculatorReadSide(system: ActorSystem[NotUsed]) {
     initDataBase
 
@@ -123,7 +111,8 @@ object akka_typed
 
 
     /**
-     * В read side приложения с архитектурой CQRS (объект TypedCalculatorReadSide в TypedCalculatorReadAndWriteSide.scala) необходимо разделить бизнес логику и запись в целевой получатель, т.е.
+     * В read side приложения с архитектурой CQRS (объект TypedCalculatorReadSide в TypedCalculatorReadAndWriteSide.scala)
+     * необходимо разделить бизнес логику и запись в целевой получатель, т.е.
      * 1) Persistence Query должно находиться в Source
      * 2) Обновление состояния необходимо переместить в отдельный от записи в БД флоу
      * 3) ! Задание со звездочкой: вместо CalculatorRepository создать Sink c любой БД (например Postgres из docker-compose файла).
@@ -132,34 +121,43 @@ object akka_typed
      *
      * */
 
-
     val source: Source[EventEnvelope, NotUsed] = readJournal
       .eventsByPersistenceId("001", startOffset, Long.MaxValue)
 
-    source
-      .map{x =>
-        println(x.toString())
-        x
-      }
-      .runForeach { event =>
-      event.event match {
+    def updateState(event: Any, seqNum: Long): (Double, Long) = {
+      val newState = event match {
         case Added(_, amount) =>
-//          println(s"!Before Log from Added: $latestCalculatedResult")
-          latestCalculatedResult += amount
-          updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-          println(s"! Log from Added: $latestCalculatedResult")
+          latestCalculatedResult + amount
         case Multiplied(_, amount) =>
-//          println(s"!Before Log from Multiplied: $latestCalculatedResult")
-          latestCalculatedResult *= amount
-          updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-          println(s"! Log from Multiplied: $latestCalculatedResult")
+          latestCalculatedResult * amount
         case Divided(_, amount) =>
-//          println(s"! Log from Divided before: $latestCalculatedResult")
-          latestCalculatedResult /= amount
-          updateResultAndOfsset(latestCalculatedResult, event.sequenceNr)
-          println(s"! Log from Divided: $latestCalculatedResult")
+          latestCalculatedResult / amount
       }
+      newState -> seqNum
     }
+
+    val graph = GraphDSL.create() { implicit builder: GraphDSL.Builder[NotUsed] =>
+      import GraphDSL.Implicits._
+
+      val input = builder.add(source)
+      val stateUpdater = builder.add(Flow[EventEnvelope].map(e => updateState(e.event, e.sequenceNr)))
+      val localSaveOutput = builder.add(Sink.foreach[(Double, Long)] {
+        case (newState, _) => latestCalculatedResult = newState
+      })
+      val dbSaveOutput = builder.add(Sink.foreach[(Double, Long)] {
+        case (newState, seqNum) => updateResultAndOffset(newState, seqNum)
+      })
+      val broadcast = builder.add(Broadcast[(Double, Long)](2))
+
+      input ~> stateUpdater
+               stateUpdater ~> broadcast
+                               broadcast.out(0) ~> localSaveOutput
+                               broadcast.out(1) ~> dbSaveOutput
+
+      ClosedShape
+    }
+
+    RunnableGraph.fromGraph(graph).run()
   }
 
   object CalculatorRepository {
@@ -181,7 +179,7 @@ object akka_typed
       entities.head
     }
 
-    def updateResultAndOfsset(calculated: Double, offset: Long): Unit = {
+    def updateResultAndOffset(calculated: Double, offset: Long): Unit = {
       using(DB(ConnectionPool.borrow())) { db =>
         db.autoClose(true)
         db.localTx {
