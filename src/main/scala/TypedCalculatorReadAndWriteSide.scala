@@ -1,13 +1,19 @@
 import akka.NotUsed
-import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed._
+import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
 import akka.persistence.query.{EventEnvelope, PersistenceQuery}
 import akka.persistence.typed.PersistenceId
 import akka.persistence.typed.scaladsl.{Effect, EventSourcedBehavior}
 import akka.stream.ClosedShape
+import akka.stream.alpakka.slick.scaladsl.{Slick, SlickSession}
 import akka.stream.scaladsl.{Broadcast, Flow, GraphDSL, RunnableGraph, Sink, Source}
-import akka_typed.CalculatorRepository.{getLatestOffsetAndResult, initDataBase, updateResultAndOffset}
+import akka_typed.CalculatorRepository._
+import slick.jdbc.JdbcBackend.Database
+
+import scala.concurrent.Await
+import scala.concurrent.duration._
+import scala.language.postfixOps
 
 
 
@@ -99,11 +105,12 @@ object akka_typed
   import TypedCalculatorWriteSide._
 
   case class TypedCalculatorReadSide(system: ActorSystem[NotUsed]) {
-    initDataBase
+    implicit val session = createSession()
+    system.classicSystem.registerOnTermination(() => session.close())
 
     implicit val materializer            = system.classicSystem
-    var (offset, latestCalculatedResult) = getLatestOffsetAndResult
-    val startOffset: Int                 = if (offset == 1) 1 else offset + 1
+    var (latestCalculatedResult, offset) = getLatestOffsetAndResult
+    val startOffset: Long                 = if (offset == 1) 1 else offset + 1
 
 //    val readJournal: LeveldbReadJournal =
     val readJournal: CassandraReadJournal =
@@ -124,7 +131,7 @@ object akka_typed
     val source: Source[EventEnvelope, NotUsed] = readJournal
       .eventsByPersistenceId("001", startOffset, Long.MaxValue)
 
-    def updateState(event: Any, seqNum: Long): (Double, Long) = {
+    def updateState(event: Any, seqNum: Long): Result = {
       val newState = event match {
         case Added(_, amount) =>
           latestCalculatedResult + amount
@@ -133,7 +140,7 @@ object akka_typed
         case Divided(_, amount) =>
           latestCalculatedResult / amount
       }
-      newState -> seqNum
+      Result(newState, seqNum)
     }
 
     val graph = GraphDSL.create() { implicit builder: GraphDSL.Builder[NotUsed] =>
@@ -141,13 +148,14 @@ object akka_typed
 
       val input = builder.add(source)
       val stateUpdater = builder.add(Flow[EventEnvelope].map(e => updateState(e.event, e.sequenceNr)))
-      val localSaveOutput = builder.add(Sink.foreach[(Double, Long)] {
-        case (newState, _) => latestCalculatedResult = newState
+      val localSaveOutput = builder.add(Sink.foreach[Result] { r =>
+          latestCalculatedResult = r.state
+          println("SAVE TO LOCAL")
       })
-      val dbSaveOutput = builder.add(Sink.foreach[(Double, Long)] {
-        case (newState, seqNum) => updateResultAndOffset(newState, seqNum)
-      })
-      val broadcast = builder.add(Broadcast[(Double, Long)](2))
+      val dbSaveOutput = builder.add(
+        Slick.sink[Result](r => updateOffsetAndResult(r))
+      )
+      val broadcast = builder.add(Broadcast[Result](2))
 
       input ~> stateUpdater
                stateUpdater ~> broadcast
@@ -161,32 +169,28 @@ object akka_typed
   }
 
   object CalculatorRepository {
-    import scalikejdbc._
-
-    def initDataBase: Unit = {
-      Class.forName("org.postgresql.Driver")
-      val poolSettings = ConnectionPoolSettings(initialSize = 10, maxSize = 100)
-
-      ConnectionPool.singleton("jdbc:postgresql://localhost:5432/demo", "docker", "docker", poolSettings)
+    def createSession(): SlickSession = {
+      val db = Database.forConfig("slick-postgres.db")
+      val profile = slick.jdbc.PostgresProfile
+      SlickSession.forDbAndProfile(db, profile)
     }
 
-    def getLatestOffsetAndResult: (Int, Double) = {
-      val entities =
-        DB readOnly { session =>
-          session.list("select * from public.result where id = 1;") {
-            row => (row.int("write_side_offset"), row.double("calculated_value")) }
-        }
-      entities.head
+    def getLatestOffsetAndResult(implicit session: SlickSession): (Double, Long) = {
+      import session.profile.api._
+      val query = sql"select calculated_value, write_side_offset from public.result where id = 1;"
+        .as[(Double, Long)]
+        .headOption
+      val future = session.db.run(query)
+      Await.result(future, 1 minute).getOrElse(throw new Exception("Result offset does not exist"))
     }
 
-    def updateResultAndOffset(calculated: Double, offset: Long): Unit = {
-      using(DB(ConnectionPool.borrow())) { db =>
-        db.autoClose(true)
-        db.localTx {
-          _.update("update public.result set calculated_value = ?, write_side_offset = ? where id = ?", calculated, offset, 1)
-        }
-      }
+    case class Result(state: Double, offset: Long)
+
+    def updateOffsetAndResult(result: Result)(implicit session: SlickSession) = {
+      import session.profile.api._
+      sqlu"update public.result set calculated_value = ${result.state}, write_side_offset = ${result.offset} where id = 1"
     }
+
   }
 
 
